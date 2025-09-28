@@ -76,7 +76,7 @@ module Discordrb::API::Channel
   # @param attachments [Array<File>, nil] Attachments to use with `attachment://` in embeds. See
   #   https://discord.com/developers/docs/resources/channel#create-message-using-attachments-within-embeds
   def create_message(token, channel_id, message, tts = false, embeds = nil, nonce = nil, attachments = nil, allowed_mentions = nil, message_reference = nil, components = nil, flags = nil, enforce_nonce = false)
-    body = { content: message, tts: tts, embeds: embeds, nonce: nonce, allowed_mentions: allowed_mentions, message_reference: message_reference, components: components&.to_a, flags: flags, enforce_nonce: enforce_nonce }
+    body = { content: message, tts: tts, embeds: embeds, nonce: nonce, allowed_mentions: nil, message_reference: message_reference, components: components&.to_a, flags: flags, enforce_nonce: enforce_nonce }
     body = if attachments
              files = [*0...attachments.size].zip(attachments).to_h
              { **files, payload_json: body.to_json }
@@ -492,6 +492,63 @@ module Discordrb::API::Channel
     )
   end
 
+  # Creates a thread in a forum channel
+  # @param token [String] The Discord authentication token
+  # @param channel_id [Integer, String] The ID of the forum channel to create the thread in
+  # @param title [String] The title/name of the thread
+  # @param auto_archive_duration [Integer] Duration in minutes before the thread is archived. Valid values: 60 1440, 4320, 10080
+  # @param message [String, nil] The content of the first message in the thread
+  # @param embeds [Array<Hash>, Hash, nil] Embedded content for the first message
+  # @param components [Array<Hash>, nil] Message components for the first message
+  # @param allowed_mentions [Discordrb::AllowedMentions, nil] Controls mention parsing in the first message
+  # @param sticker_ids [Array<Integer>, nil] IDs of stickers to include in the first message
+  # @param attachments [Array<File>, nil] Files to attach to the first message
+  # @param flags [Integer, nil] Message flags for the first message
+  # @param rate_limit_per_user [Integer] Thread slowmode rate limit in seconds. Default: 0
+  # @param applied_tags [Array<Integer>, nil] Array of tag IDs to apply to the thread
+  #
+  # @return [Hash] The created thread object
+  #
+  # @raise [Discordrb::Errors::MessageTooLong] If the message content is over 2000 characters
+  #
+  # @see https://discord.com/developers/docs/resources/channel#start-thread-in-forum-channel
+  def create_forum_thread(token, channel_id, title, auto_archive_duration, message: nil, embeds: nil, components: nil, allowed_mentions: nil, sticker_ids: nil, attachments: nil, flags: nil, rate_limit_per_user: 0, applied_tags: nil)
+    normalized_embeds = normalize_embeds(embeds)
+    allowed_mentions = allowed_mentions.to_hash unless allowed_mentions.nil?
+
+    base_payload = {
+      name: title,
+      auto_archive_duration: auto_archive_duration,
+      message: {
+        content: message,
+        embeds: normalized_embeds,
+        allowed_mentions: allowed_mentions,
+        sticker_ids: sticker_ids,
+        components: components&.to_a,
+        flags: flags
+      },
+      rate_limit_per_user: rate_limit_per_user,
+      applied_tags: applied_tags
+    }
+
+    body = build_request_body_with_attachments(base_payload, attachments)
+    headers = build_request_headers(token, is_json_content: !attachments)
+
+    Discordrb::API.request(
+      :channels_cid_messages_forum_thread,
+      channel_id,
+      :post,
+      "#{Discordrb::API.api_base}/channels/#{channel_id}/threads",
+      body,
+      **headers
+    )
+  rescue RestClient::BadRequest => e
+    parsed = JSON.parse(e.response.body)
+    raise Discordrb::Errors::MessageTooLong, "Message over the character limit (#{message.length} > 2000)" if parsed['content'].is_a?(Array) && parsed['content'].first == 'Must be 2000 or fewer in length.'
+
+    raise
+  end
+
   # Add the current user to a thread.
   # https://discord.com/developers/docs/resources/channel#join-thread
   def join_thread(token, channel_id)
@@ -608,5 +665,23 @@ module Discordrb::API::Channel
       "#{Discordrb::API.api_base}/channels/#{channel_id}/users/@me/threads/archived/private?#{query}",
       Authorization: token
     )
+  end
+
+  def normalize_embeds(embeds)
+    array = embeds.is_a?(Array) ? embeds : [embeds]
+    array.compact.map(&:to_hash)
+  end
+
+  def build_request_headers(token, is_json_content: true)
+    headers = { Authorization: token }
+    headers[:content_type] = :json if is_json_content
+    headers
+  end
+
+  def build_request_body_with_attachments(payload, attachments)
+    return payload.to_json unless attachments
+
+    files = [*0...attachments.size].zip(attachments).to_h
+    { **files, payload_json: payload.to_json }
   end
 end

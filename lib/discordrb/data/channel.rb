@@ -93,6 +93,8 @@ module Discordrb
     #   a thread.
     attr_reader :invitable
 
+    attr_reader :available_tags
+
     # @return [true, false] whether or not this channel is a PM or group channel.
     def private?
       pm? || group?
@@ -121,6 +123,8 @@ module Discordrb
       @user_limit = data['user_limit']
       @position = data['position']
       @parent_id = data['parent_id'].to_i if data['parent_id']
+
+      @available_tags = data['available_tags']&.map { |tag| Discordrb::ThreadTag.new(tag, self) }
 
       if private?
         @recipients = []
@@ -920,6 +924,38 @@ module Discordrb
       Channel.new(JSON.parse(data), @bot, @server)
     end
 
+    # Creates a new thread in a forum channel.
+    # @param title [String] The title/name of the thread. Required.
+    # @param auto_archive_duration [Integer] Duration in minutes before the thread auto-archives. Must be one of 60, 1440, 4320, 10080.
+    # @param message [String, nil] The initial message content for the thread. At least one of message, embeds, sticker_ids,
+    #   components, or attachments must be provided.
+    # @param embeds [Array<Hash, Webhooks::Embed>, nil] Array of rich embeds to include in the initial message.
+    # @param components [Array<Hash>, nil] Message components (buttons, select menus, etc.) to include.
+    # @param allowed_mentions [AllowedMentions, nil] Controls which mentions are allowed in the message.
+    # @param sticker_ids [Array<Integer>, nil] Array of sticker IDs to include in the message.
+    # @param attachments [Array<File>, nil] Files to attach to the message.
+    # @param flags [Integer, nil] Message flags. See {Message::FLAGS}.
+    # @param rate_limit_per_user [Integer, nil] Thread-specific slowmode in seconds.
+    # @param applied_tags [Array<Integer, String, ThreadTag>, nil] Forum tags to apply to the thread. Can be tag IDs, names, or ThreadTag objects.
+    # @raise [ArgumentError] If title is nil or empty
+    # @raise [ArgumentError] If no message content (message/embeds/stickers/components/attachments) is provided
+    # @raise [ArgumentError] If allowed_mentions is provided but not an AllowedMentions object
+    # @raise [ArgumentError] If any of the provided tags are not available in the forum channel
+    # @return [Channel] The created forum thread channel
+    def start_forum_thread(title, auto_archive_duration, message: nil, embeds: nil, components: nil, allowed_mentions: nil, sticker_ids: nil, attachments: nil, flags: nil, rate_limit_per_user: nil, applied_tags: nil)
+      raise ArgumentError, 'Forum thread can only be created for forum channel.' unless @type == 'forum'
+
+      applied_tags = validate_selected_tags(applied_tags)
+      allowed_mentions_options = %w[roles users everyone]
+      raise ArgumentError, 'Title is required to start a forum thread.' unless !title.nil? && !title.empty?
+      raise ArgumentError, 'Content is required to start a forum thread. Specify at least one of [message, embeds, sticker_ids, components, attachments]' unless [message, embeds, sticker_ids, components, attachments].any?
+      raise ArgumentError, 'Invalid allowed_mentions. Please use Discordrb::AllowedMentions' unless !allowed_mentions || allowed_mentions.is_a?(Discordrb::AllowedMentions)
+
+      data = API::Channel.create_forum_thread(@bot.token, @id, title, auto_archive_duration, message: message, embeds: embeds, components: components, allowed_mentions: allowed_mentions, sticker_ids: sticker_ids, attachments: attachments, flags: flags, rate_limit_per_user: rate_limit_per_user, applied_tags: applied_tags)
+
+      # Channel.new(JSON.parse(data), @bot, @server)
+    end
+
     # @!group Threads
 
     # Join this thread.
@@ -1054,6 +1090,37 @@ module Discordrb
         id = element['id'].to_i
         @permission_overwrites[id] = Overwrite.from_hash(element)
       end
+    end
+
+    def validate_selected_tags(tags)
+      return unless tags
+
+      selected_tags = []
+
+      avail = Array(@available_tags)
+      ids = avail.to_h { |t| [t.id, true] }
+      names = avail.to_h { |t| [t.name, t.id] }
+
+      Array(tags).map do |t|
+        case t
+        when Discordrb::ThreadTag
+          id = t.id
+          raise ArgumentError, 'Selected tag not available' unless ids[id]
+
+          selected_tags.append(id)
+        when Integer
+          raise ArgumentError, 'Selected tag not available' unless ids[t]
+
+          selected_tags.append(t)
+        when String
+          names[t] || (raise ArgumentError, 'Selected tag not available')
+          selected_tags.append(names[t])
+        else
+          raise ArgumentError, 'Selected tag not available'
+        end
+      end
+
+      selected_tags
     end
   end
 end
